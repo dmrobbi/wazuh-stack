@@ -1,0 +1,23 @@
+#!/bin/sh
+# agentic-soc-send — wazuh integration wrapper
+#
+# Wazuh's wazuh-integratord looks for an executable file matching the
+# integration's <name> in /var/ossec/integrations/ (no extension). The
+# canonical integrations ship a shell wrapper that exec's the .py
+# implementation behind it. See /var/ossec/integrations/slack for the
+# canonical pattern this is modelled on.
+#
+# This file must be named agentic-soc-send (no extension) and executable,
+# owned root:wazuh with mode 0750. The .py file (the actual implementation)
+# lives alongside.
+
+WPYTHON_BIN="framework/python/bin/python3"
+SCRIPT_PATH_NAME="$0"
+DIR_NAME="$(cd $(dirname "${SCRIPT_PATH_NAME}"); pwd -P)"
+
+PYTHON_SCRIPT="${DIR_NAME}/$(basename "${SCRIPT_PATH_NAME}").py"
+
+# Run the python implementation with the agentic-soc-send's own
+# environment (which the manager container sets via docker-compose env
+# block — REALTIME_SOC_URL, OPENCLAW_GATEWAY_URL, etc.).
+exec "${DIR_NAME}/../${WPYTHON_BIN}" "${PYTHON_SCRIPT}" "$@"

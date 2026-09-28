@@ -1,0 +1,11 @@
+server.host: "0.0.0.0"
+server.port: 5601
+opensearch.hosts: ["https://wazuh.indexer:9200"]
+opensearch.ssl.verificationMode: "none"
+opensearch.username: "admin"
+opensearch.password: "CHANGE_ME"
+wazuh.api.host: "wazuh.manager"
+wazuh.api.port: 55000
+wazuh.api.username: "admin"
+wazuh.api.password: "CHANGE_ME"
+uiSettings.overrides.defaultRoute: "/app/wz-home"

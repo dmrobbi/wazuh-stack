@@ -1,0 +1,19 @@
+nodes:
+  indexer:
+    - name: wazuh.indexer
+      ip: 127.0.0.1
+      dns:
+        - wazuh.indexer
+        - localhost
+  server:
+    - name: wazuh.manager
+      ip: 127.0.0.1
+      dns:
+        - wazuh.manager
+        - localhost
+  dashboard:
+    - name: wazuh.dashboard
+      ip: 127.0.0.1
+      dns:
+        - wazuh.dashboard
+        - localhost

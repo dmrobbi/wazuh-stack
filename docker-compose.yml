@@ -1,0 +1,321 @@
+# Ansible managed
+# Wazuh App Copyright (C) 2017, Wazuh Inc. (License GPLv2)
+#
+# Rendered by Ansible role `wazuh_soc_docker_compose` from
+# /home/soc/repos/crab-meat-repos-ansible-wazuh_soc_docker_compose/.
+# DO NOT hand-edit this file — edit the role's defaults/main.yml or
+# the upstream template and re-run the role.
+#
+# This template captures the Bug A + Bug B fixes from 2026-08-16
+# (see /home/soc/.openclaw/workspace/memory/2026-08-16-bugA-fix.md):
+#   - bind-mount the canonical agentic-soc-send.py from the repo
+#     (not a local stale copy)
+#   - PYTHONPATH includes /usr/local/share/soc so all soc_* modules
+#     resolve without per-call importlib fallbacks
+#   - 5 MCP URL env vars point at the host LAN IP (not 127.0.0.1,
+#     which inside the container is the container's own loopback)
+#   - bind-mount the wider config dir so soc_ticket_template finds
+#     its template file
+#   - SMTP host falls back to the mail host's Tailscale IP because
+#     mail.example.com:587 is currently unreachable from this host.
+
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.14.1
+    hostname: wazuh.manager
+    restart: always
+    # 2026-08-06 — SOC A1: host.docker.internal mapping so wazuh-integratord
+    # can reach the host's OpenClaw gateway at 127.0.0.1:18789.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "openclaw-gateway:172.19.0.1"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD:?set in .env}
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      # API_PASSWORD removed 2026-08-03 19:25 UTC. The `wazuh-wui` account now
+      # uses a 24-char random secret from
+      # /home/soc/.openclaw/workspace/secrets/wazuh-agent-keys-2026-08-03.env
+      # (key WAZUH_API_PASSWORD_NEW). Inject via `docker-compose up` with
+      # `--env-file` or set the env var on the manager container directly.
+      # Do NOT commit a plaintext password back here.
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      # 2026-08-06: SOC 1.1 — real-time alert ingest into SecurityOperationsAgent.
+      # Localhost from the manager container is the manager itself; the SOC
+      # realtime server runs on the docker host. Override the default
+      # (http://127.0.0.1:8765/ingest) with the host's LAN IP.
+      - REALTIME_SOC_URL=http://192.0.2.106:8765/ingest
+      # 2026-08-06: SOC A1 — PATH must include /home/soc/.npm-global/bin
+      # so the integration script can find the openclaw binary.
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin:/home/soc/.npm-global/bin
+      # 2026-08-07 18:25 UTC — SSL_CERT_FILE so Python's
+      # ssl.create_default_context() finds the system CA bundle.
+      # Without this, smtplib.SMTP.starttls() to mail.example.com
+      # fails with CERTIFICATE_VERIFY_FAILED because the Wazuh-bundled
+      # Python looks at /usr/local/ssl/cert.pem (does not exist on
+      # Amazon Linux 2023 base image) instead of
+      # /etc/pki/tls/certs/ca-bundle.crt (which has ISRG Root X1).
+      - SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+      - SSL_CERT_DIR=/etc/pki/tls/certs
+      # 2026-08-06: SOC A1 — HOME=/home/operator so openclaw's
+      # `~/.openclaw/agents/` resolves to the bind-mounted directory.
+      - HOME=/home/operator
+      # 2026-08-13: SOC Phase 3 — 24h shadow run. The alert flow
+      # runs the full pipeline (real ticket creation + would-have-
+      # applied + verify) but NO iptables mutation. Audit rows
+      # carry extra.shadow=True so the curator can distinguish
+      # from real applies. The hourly status cron
+      # (scripts/soc/soc_shadow_status.py --cron) reads the
+      # shadow flag in the audit log to produce the per-hour
+      # summary emailed to wlrobbi@gmail.com. Set to 0 to
+      # disable the shadow run.
+      - WAZUH_AGENTIC_LOOP_LIVE=1       # 2026-08-17 17:55 UTC: Phase 4 — flip the switch (operator consent at 17:55 UTC). Replaces WAZUH_AGENTIC_LOOP_SHADOW=1 from Phase 3. Per the closed-loop completion plan Phase 4 sub-task 4.c, run for 24h wall-time then sign off (4.d). Rollback: revert to SHADOW=1 + `docker compose up -d wazuh.manager`. See memory/2026-08-17-soak-report.md for runbook.
+      # directory (separate from the user's ~/.openclaw/).
+      # 2026-08-06 15:33 — SOC A1 moved: the SOC gateway now lives on
+      # control host (192.0.2.70:18790). The manager talks to it via ws://;
+      # OPENCLAW_STATE_DIR points at the per-host state dir mounted
+      # from /home/soc/.openclaw-wazuh.
+      - OPENCLAW_STATE_DIR=/home/soc/.openclaw-wazuh
+      # 2026-08-06 15:33 — SOC A1 moved: gateway URL now points at
+      # control host (192.0.2.70:18790). The container's default route via
+      # 172.19.0.1 → host's br1 → 10.0.0.0/8 reaches control host.
+      - OPENCLAW_GATEWAY_URL=ws://192.0.2.70:18790
+      # 2026-08-06 15:33 — token for control host's SOC gateway. Stored
+      # on the host at /home/soc/.openclaw/workspace/secrets/openclaw-
+      # soc-gateway.token (chmod 600, owner operator).
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:?set in .env}
+      # 2026-08-11 — SOC E1b: tell soc_stig_classifier where to find the
+      # per-STIG YAML catalogues. Combined with the
+      # /usr/local/stig-rules:ro bind-mount above, this is what makes
+      # maybe_classify_stig() actually classify L12 alerts (vs failing
+      # open and silently attaching no stig_id). The path must match
+      # the bind-mount destination; do not change one without the
+      # other.
+      - SOC_STIG_RULES_DIR=/usr/local/stig-rules
+      # 2026-08-11 — SOC E1b: prepend the vendored PyYAML to sys.path so
+      # import yaml works in the manager container (no pip + no C ext
+      # on Amazon Linux 2023 base). Without this, the classifier's
+      # minimal YAML parser silently extracts only 1 of 10 entries per
+      # file (folded-scalar bug). The vendor dir is mounted from
+      # /home/soc/repos/example-work/vendor/ on the host.
+      # 2026-08-16 — Bug A follow-up: also prepend /usr/local/share/soc
+      # so `from soc_tickets_helper`, `from soc_safety_decider`,
+      # `from soc_stig_classifier`, `from soc_ticket_template` resolve
+      # without per-call importlib fallbacks. That directory is the
+      # bind-mount target for /home/soc/repos/example-work/scripts/soc
+      # (line 137); without it on sys.path, Phase 1.1/1.2/1.3/1.4 +
+      # E1b all silently fail-open inside the container.
+      - PYTHONPATH=/usr/local/vendor:/usr/local/share/soc
+      # 2026-08-16 — Bug A follow-up: tell the host-side SOC MCPs where
+      # to reach the integration script. Inside the manager container
+      # `127.0.0.1` is the container's own loopback, so the defaults
+      # in soc_tickets_helper.py / soc_safety_decider.py / soc_decision.py
+      # (which all assume 127.0.0.1) hit nothing. The MCP servers
+      # themselves run on the host at 192.0.2.106 (edge host LAN) bound
+      # to 127.0.0.1 only, so we set explicit URLs to the host LAN IP.
+      # The MEMORY note for these services is that they bind 0.0.0.0
+      # OR 127.0.0.1 — only the dashboard (8771) + realtime (8765)
+      # bind 0.0.0.0; the five MCPs (8766/8767/8768/8769/8770) all
+      # bind 127.0.0.1, so an explicit host URL is required.
+      # 2026-09-27: that logic is wrong for bridge-network containers —
+      # a loopback-bound service is NOT reachable via the host LAN IP
+      # (this is why the tickets helper got ConnectionRefused on every
+      # alert). The tickets MCP is reached via soc-tickets-bridge on
+      # the docker gateway (172.19.0.1:8768 -> 127.0.0.1:8768,
+      # docker-bridge-only, soc-llm-control systemd unit).
+      - SOC_TICKETS_HELPER_URL=http://172.19.0.1:8768
+      - SOC_WAZUH_MCP_URL=http://192.0.2.106:8766
+      - SOC_AUDIT_MCP_URL=http://192.0.2.106:8769
+      - SOC_MANAGER_MCP_URL=http://172.19.0.1:8767
+      - SOC_MEMORY_MCP_URL=http://172.19.0.1:8770
+    # 2026-08-06 21:35 UTC — load SMTP creds + recipient from the secret file
+    # into the container env so agentic-soc-send.py can find SMTP_HOST,
+    # SMTP_PORT, REPORTS_MAILBOX, REPORTS_MAILBOX_PW via os.environ.
+    env_file:
+      - ./secrets/reports-mailbox.env
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem
+      # 2026-08-05: changed wazuh.manager.pem -> admin.pem. Filebeat needs the
+      # admin cert (CN=admin) so the indexer's `admin_dn` in opensearch.yml
+      # maps it to backend role `admin` -> all_access. wazuh.manager.pem has
+      # CN=wazuh.manager which is not a user in internal_users.yml.
+      - ./config/wazuh_indexer_ssl_certs/admin.pem:/etc/ssl/filebeat.pem
+      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/etc/ssl/filebeat.key
+      - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      # 2026-08-04 — agentic SOC integration. See
+      # /home/soc/repos/example-work/docs/infrastructure/wazuh-soc-reports-2026-08-04.md
+      # 2026-08-16 — Bug A fix: bind-mount the canonical repo file directly
+      # instead of a local ./integrations/ copy that was drifting from the
+      # repo. The local copy was last modified 2026-08-09 (md5 c4bc659…)
+      # and missed every commit since — Phase 1.1/1.2/1.3/1.4, Phase 2,
+      # Phase 3 (shadow mode), E1a, E3-E6, F3. Pointing at the repo
+      # source-of-truth means git pull + container recreate picks up new
+      # code automatically.
+      - /home/soc/repos/example-work/scripts/soc/agentic-soc-send.py:/var/ossec/integrations/agentic-soc-send.py:ro
+      - ./secrets/reports-mailbox.env:/etc/reports-mailbox.env:ro
+      # 2026-08-06 — SOC A1: bind-mount llm_runtime.py (and the rest of
+      # scripts/soc/) into the manager container so maybe_enrich() can
+      # import it for the openclaw agent harness call. Path is read-only
+      # and uses the existing /home/soc/repos/example-work tree.
+      - /home/soc/repos/example-work/scripts/soc:/usr/local/share/soc:ro
+      # 2026-08-11 — SOC E1b fix: bind-mount the per-STIG catalogue YAMLs
+      # (config/stig-rules/catalogue-*.yaml) so soc_stig_classifier can
+      # load them. The classifier's _catalogue_dir() checks
+      # $SOC_STIG_RULES_DIR first, falling back to
+      # REPO_ROOT/config/stig-rules (= /usr/local/config/stig-rules).
+      # We mount to top-level paths (NOT under the existing
+      # /usr/local/share/soc:ro bind-mount, because overlayfs can't
+      # create sub-mountpoints under read-only bind mounts). The env
+      # var below points at /usr/local/stig-rules. Without these,
+      # every L12 alert silently fails-open from maybe_classify_stig()
+      # and no stig_id is attached. See
+      # /home/soc/.openclaw/workspace/OPEN-ITEMS §1 E1b.
+      - /home/soc/repos/example-work/config/stig-rules:/usr/local/stig-rules:ro
+      # 2026-08-16 — Bug A follow-up: bind-mount the wider config dir
+      # so soc_ticket_template.format_ticket_body() finds its template
+      # file (config/soc-ticket-template.txt). Without this, the
+      # default template path resolves to
+      # /home/soc/repos/example-work/config/soc-ticket-template.txt
+      # which doesn't exist inside the container — and
+      # maybe_create_ticket() raises FileNotFoundError on every alert.
+      # Mounting the dir (not just the file) keeps future template
+      # edits live without a container restart.
+      - /home/soc/repos/example-work/config:/usr/local/config:ro
+      # 2026-08-11 — SOC E1b fix (part 2): the manager container's
+      # Amazon Linux 2023 base has no PyYAML, so the classifier's
+      # _parse_yaml() falls through to a hand-rolled minimal parser
+      # that has a bug on folded scalars (extracts 1 of N entries).
+      # The host's vendor/yaml/ is a pure-Python copy of PyYAML 6.0.1
+      # that works on any Python 3.x. Mounting it to /usr/local/vendor
+      # (NOT under the existing /usr/local/share/soc:ro bind-mount,
+      # because overlayfs can't create sub-mountpoints under read-only
+      # bind mounts) and prepending to PYTHONPATH makes import yaml
+      # succeed, and the catalogue loads correctly. See
+      # /home/soc/repos/example-work/vendor/README.md.
+      - /home/soc/repos/example-work/vendor:/usr/local/vendor:ro
+      # 2026-08-06 — SOC A1: bind-mount openclaw binary (host npm-global)
+      # so the integration script can invoke it. wazuh-integratord runs
+      # the script as uid 999 (wazuh); the host binary must be readable
+      # by that uid.
+      # 2026-08-08 — SOC isolation: replace the host's npm-global openclaw
+      # bind-mount with the dedicated SOC install at
+      # /home/soc/.openclaw-soc-install/ (rsynced from control host's
+      # /home/soc/.npm-global/lib/node_modules/openclaw/ on 2026-08-08;
+      # OpenClaw 2026.7.1 commit 2d2ddc4). The host's main install at
+      # /home/soc/.npm-global/ is unaffected; this is a separate
+      # node_modules tree served by the same /home/soc/.npm-global/
+      # path inside the manager container so PATH doesn't change.
+      - /home/soc/.openclaw-soc-install/bin:/home/soc/.npm-global/bin:ro
+      - /home/soc/.openclaw-soc-install/openclaw:/home/soc/.npm-global/lib/node_modules/openclaw:ro
+      # 2026-08-06 — openclaw is a Node script (openclaw.mjs); node must
+      # be on PATH inside the container. The manager image has no node.
+      - /usr/bin/node:/usr/bin/node:ro
+      # 2026-08-06 — SOC A1: bind-mount the wazuh-scoped openclaw state
+      # directory (NOT the user's `~/.openclaw/`; that's private and
+      # mode 700). The SOC agents are registered here so the
+      # wazuh-integratord process (uid 999) can invoke them.
+      - /home/soc/.openclaw-wazuh:/home/soc/.openclaw-wazuh
+      # 2026-08-08 — SOC A2: bind-mount the SOC agents workspace
+      # (/home/soc/soc-agents/<id>/IDENTITY.md etc.) so the personas
+      # survive container restarts. The wazuh_soc_agentic_ai Ansible
+      # role populates this from example-work/scripts/soc/agent-identities/.
+      # Without this mount, every `docker compose up` recreates the
+      # container with empty IDENTITY.md files and the LLM improvises.
+      - /home/soc/soc-agents:/home/soc/soc-agents
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.14.1
+    hostname: wazuh.indexer
+    restart: always
+    ports:
+      - "127.0.0.1:9200:9200"
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.key
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.pem
+      - ./config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem
+      - ./config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml
+      - ./config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.14.1
+    hostname: wazuh.dashboard
+    restart: always
+    ports:
+      - 5601:5601
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD:?set in .env}
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:?set in .env}
+      - API_USERNAME=wazuh-wui
+      # API_PASSWORD removed 2026-08-03 — see note in wazuh.manager block.
+      # WazuhClient pulls WAZUH_API_PASSWORD_NEW from the host env at runtime.
+    volumes:
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
+      - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
+      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    depends_on:
+      - wazuh.indexer
+    links:
+      - wazuh.indexer:wazuh.indexer
+      - wazuh.manager:wazuh.manager
+
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-indexer-data:
+  wazuh-dashboard-config:
+  wazuh-dashboard-custom:
