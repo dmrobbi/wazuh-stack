@@ -138,7 +138,7 @@ services:
       # (this is why the tickets helper got ConnectionRefused on every
       # alert). The tickets MCP is reached via soc-tickets-bridge on
       # the docker gateway (172.19.0.1:8768 -> 127.0.0.1:8768,
-      # docker-bridge-only, soc-llm-control systemd unit).
+      # docker-bridge-only, laya-control systemd unit).
       - SOC_TICKETS_HELPER_URL=http://172.19.0.1:8768
       - SOC_WAZUH_MCP_URL=http://192.0.2.106:8766
       - SOC_AUDIT_MCP_URL=http://192.0.2.106:8769

@@ -81,7 +81,7 @@ NOISY_RULE_IDS = frozenset({
 DEFAULT_NOISY_UNITS = frozenset({
     "gms-mock-ui",     # darth — Express 5 / path-to-regexp v8 broken
     "gms-chrome",      # darth — Chrome kiosk for gms-mock-ui
-    "gitlab-runner",   # darth — config.toml permission denied (Trooper2)
+    "gitlab-runner",   # darth — config.toml permission denied (control host)
 })
 
 
