@@ -21,7 +21,7 @@
 
 services:
   wazuh.manager:
-    image: wazuh/wazuh-manager:4.14.1
+    image: wazuh/wazuh-manager:4.14.8
     hostname: wazuh.manager
     restart: always
     # 2026-08-06 — SOC A1: host.docker.internal mapping so wazuh-integratord
@@ -251,7 +251,7 @@ services:
       - /home/soc/soc-agents:/home/soc/soc-agents
 
   wazuh.indexer:
-    image: wazuh/wazuh-indexer:4.14.1
+    image: wazuh/wazuh-indexer:4.14.8
     hostname: wazuh.indexer
     restart: always
     ports:
@@ -276,7 +276,7 @@ services:
       - ./config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
 
   wazuh.dashboard:
-    image: wazuh/wazuh-dashboard:4.14.1
+    image: wazuh/wazuh-dashboard:4.14.8
     hostname: wazuh.dashboard
     restart: always
     ports:
